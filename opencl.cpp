@@ -24,7 +24,7 @@ void generateRandomPoints(vector<Point>& points, int numPoints) {
 
 // Kernel source code for K-Means clustering
 const char* kMeansKernelSource = R"(
-__kernel void kMeansClustering(__global float2* points, __global float2* centroids, int numPoints, int numClusters) {
+_kernel void kMeansClustering(_global float2* points, __global float2* centroids, int numPoints, int numClusters) {
     int gid = get_global_id(0);
     float minDistance = INFINITY;
     int minIndex = 0;
@@ -45,15 +45,25 @@ __kernel void kMeansClustering(__global float2* points, __global float2* centroi
 }
 )";
 
+// Function to check OpenCL errors
+void checkOpenCLError(cl_int error, const char* operation) {
+    if (error != CL_SUCCESS) {
+        cerr << "Error during " << operation << ": " << error << endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
 // K-Means clustering algorithm using OpenCL
 void kMeansClusteringOpenCL(vector<Point>& points, vector<Point>& centroids, int numClusters) {
     // Initialize OpenCL
     vector<cl::Platform> platforms;
     cl::Platform::get(&platforms);
+    checkOpenCLError(!platforms.empty() ? CL_SUCCESS : -1, "getting platforms");
     cl::Platform platform = platforms.front();
 
     vector<cl::Device> devices;
-    platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+    platform.getDevices(CL_DEVICE_TYPE_CPU, &devices);
+    checkOpenCLError(!devices.empty() ? CL_SUCCESS : -1, "getting devices");
     cl::Device device = devices.front();
 
     cl::Context context(device);
@@ -62,30 +72,25 @@ void kMeansClusteringOpenCL(vector<Point>& points, vector<Point>& centroids, int
     // Load kernel source code
     cl::Program::Sources sources;
     sources.push_back({kMeansKernelSource, strlen(kMeansKernelSource)});
-
     cl::Program program(context, sources);
-    program.build("-cl-std=CL1.2");
+    checkOpenCLError(program.build("-cl-std=CL1.2"), "building kernel");
 
     // Create buffers for points and centroids
-    cl::Buffer pointsBuffer(context, CL_MEM_READ_WRITE, sizeof(Point) * points.size());
-    cl::Buffer centroidsBuffer(context, CL_MEM_READ_WRITE, sizeof(Point) * numClusters);
-
-    // Write data to buffers
-    queue.enqueueWriteBuffer(pointsBuffer, CL_TRUE, 0, sizeof(Point) * points.size(), points.data());
-    queue.enqueueWriteBuffer(centroidsBuffer, CL_TRUE, 0, sizeof(Point) * numClusters, centroids.data());
+    cl::Buffer pointsBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(Point) * points.size(), points.data());
+    cl::Buffer centroidsBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(Point) * centroids.size(), centroids.data());
 
     // Create kernel and set arguments
     cl::Kernel kernel(program, "kMeansClustering");
-    kernel.setArg(0, pointsBuffer);
-    kernel.setArg(1, centroidsBuffer);
-    kernel.setArg(2, static_cast<int>(points.size()));
-    kernel.setArg(3, numClusters);
+    checkOpenCLError(kernel.setArg(0, pointsBuffer), "setting kernel argument 0");
+    checkOpenCLError(kernel.setArg(1, centroidsBuffer), "setting kernel argument 1");
+    checkOpenCLError(kernel.setArg(2, static_cast<int>(points.size())), "setting kernel argument 2");
+    checkOpenCLError(kernel.setArg(3, numClusters), "setting kernel argument 3");
 
     // Execute the kernel
-    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(points.size()), cl::NullRange);
+    checkOpenCLError(queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(points.size()), cl::NullRange), "enqueueing kernel");
 
     // Read back the updated points buffer
-    queue.enqueueReadBuffer(pointsBuffer, CL_TRUE, 0, sizeof(Point) * points.size(), points.data());
+    checkOpenCLError(queue.enqueueReadBuffer(pointsBuffer, CL_TRUE, 0, sizeof(Point) * points.size(), points.data()), "reading buffer");
 }
 
 int main() {
